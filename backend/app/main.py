@@ -123,6 +123,21 @@ async def generate_image(req: ImageRequest):
     except Exception:
         pass
 
+    import asyncio, replicate as replicate_client
+    api_token = os.environ.get("REPLICATE_API_TOKEN")
+    if api_token:
+        client = replicate_client.Client(api_token=api_token)
+        output = await asyncio.to_thread(
+            client.run,
+            "google/imagen-4",
+            input={
+                "prompt": safe_prompt,
+                "aspect_ratio": "16:9",
+                "safety_filter_level": "block_medium_and_above",
+            },
+        )
+        return ImageResponse(image_url=output.url)
+
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     if openai_api_key:
         async with httpx.AsyncClient(timeout=60) as client:
