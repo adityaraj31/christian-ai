@@ -109,6 +109,7 @@ export default function App() {
   const [input, setInput] = useState("")
   const [denomination, setDenomination] = useState("Protestant")
   const [generating, setGenerating] = useState(false)
+  const [generatingImage, setGeneratingImage] = useState(false)
   const chatEnd = useRef(null)
   const sid = useRef(sessionId())
 
@@ -161,6 +162,7 @@ export default function App() {
   }
 
   async function handleVisualize(text) {
+    setGeneratingImage(true)
     try {
       const res = await fetch("/api/generate-image", {
         method: "POST",
@@ -189,6 +191,8 @@ export default function App() {
         ...prev,
         { role: "assistant", text: "Image generation failed. Check API configuration.", citations: [] },
       ])
+    } finally {
+      setGeneratingImage(false)
     }
   }
 
@@ -215,6 +219,16 @@ export default function App() {
                   onVisualize={handleVisualize}
                 />
               )
+            )}
+            {generatingImage && (
+              <div className="flex justify-start mb-4">
+                <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-2 text-sm text-gray-500">
+                  <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  Generating image...
+                </div>
+              </div>
             )}
             <div ref={chatEnd} />
           </div>
