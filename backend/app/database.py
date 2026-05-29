@@ -2,12 +2,15 @@ import json
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
 BIBLE_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "bible_data"
+INDEX_DIR = Path(__file__).resolve().parent / "data" / "faiss_index"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+BATCH_SIZE = 512
 
 _vector_store: Optional[FAISS] = None
 
@@ -36,11 +39,46 @@ def _load_all_verses() -> list[Document]:
     return docs
 
 
+def _build_and_save(docs: list[Document]) -> FAISS:
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    texts = [d.page_content for d in docs]
+    all_embeddings = []
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i : i + BATCH_SIZE]
+        batch_embeddings = embeddings.embed_documents(batch)
+        all_embeddings.extend(batch_embeddings)
+        print(f"  Embedded {min(i + BATCH_SIZE, len(texts))}/{len(texts)} verses...")
+
+    embedding_matrix = np.array(all_embeddings, dtype=np.float32)
+    store = FAISS.from_embeddings(
+        text_embeddings=list(zip(texts, embedding_matrix)),
+        embedding=embeddings,
+        metadatas=[d.metadata for d in docs],
+    )
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    store.save_local(str(INDEX_DIR))
+    print(f"  FAISS index saved to {INDEX_DIR} with {len(docs)} verses.")
+    return store
+
+
+def _load_or_build() -> FAISS:
+    index_file = INDEX_DIR / "index.faiss"
+    if index_file.exists():
+        print("  Loading cached FAISS index from disk...")
+        embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+        return FAISS.load_local(
+            str(INDEX_DIR),
+            embeddings=embeddings,
+            allow_dangerous_deserialization=True,
+        )
+    print("  No cached index found. Building from Bible data...")
+    docs = _load_all_verses()
+    return _build_and_save(docs)
+
+
 def init_vector_store() -> None:
     global _vector_store
-    docs = _load_all_verses()
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-    _vector_store = FAISS.from_documents(docs, embeddings)
+    _vector_store = _load_or_build()
 
 
 def get_retriever(k: int = 4):

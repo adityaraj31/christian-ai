@@ -63,21 +63,32 @@ A production-grade, secure Christianity-focused AI assistant that provides groun
 | `app/database.py` | Scans `bible_data/`, parses chapter JSONs into LangChain `Document` objects, builds in-memory FAISS index using HuggingFace `all-MiniLM-L6-v2` embeddings. Exposes `get_retriever(k=4)`. |
 | `app/schemas.py` | Pydantic models: `ChatRequest` (message, denomination), `ChatResponse` (response, safety_triggered, citations), `ImageRequest`/`ImageResponse`. |
 | `app/graph.py` | LangGraph state machine with `AgentState` typed dict. Three nodes: **Moderation Guardrail** (LLM eval → SAFE/UNSAFE), **Retrieval Engine** (FAISS semantic search), **Grounded Generator** (strict context-only prompt with denominational awareness). Conditional edge routes UNSAFE directly to polite refusal. |
-| `app/main.py` | FastAPI lifespan (init vector store + compile graph on startup). Endpoints: `GET /health`, `POST /api/chat`, `POST /api/generate-image`. CORS middleware. |
+| `app/main.py` | FastAPI lifespan (init vector store + compile graph on startup). Endpoints: `GET /health`, `POST /api/chat`, `POST /api/generate-image`. CORS middleware. In-memory `_chat_store` dict keyed by `session_id` for conversation history across turns. |
 
 ### Frontend
 
 | File | Role |
 |---|---|
-| `src/App.jsx` | Main chat UI: sidebar with Denominational Context Profile dropdown, message feed, citations toggle, "Visualize this Context" button. |
+| `src/App.jsx` | Main chat UI: sidebar with Denominational Context Profile dropdown, message feed, citations toggle, "Visualize this Context" button. Generates a UUID `session_id` on first load (`sessionStorage`) and sends it with every request to maintain conversation memory. |
 | `src/index.css` | Tailwind CSS entry point. |
+
+## Key Features Added
+
+| Feature | Implementation |
+|---|---|
+| **Conversation Memory** | `session_id`-keyed history store in `app/main.py`. The last 20 exchanges (10 turns) are injected into the generation prompt, enabling follow-up questions to reference prior context. |
+| **Image Moderation** | Image descriptions are LLM-checked for safety before being sent to the image API. Flagged descriptions return a 400 error. |
+| **Historical Hallucination Defense** | System prompt rule #8 rejects historically inaccurate claims (e.g., "Constantine wrote the Bible") with factual corrections. |
+| **Theological Complexity Handling** | System prompt rule #7 directs the model to acknowledge theological mysteries (e.g., problem of evil) without claiming full resolution, citing relevant passages. |
+| **Evaluation Dataset** | `tests/evaluation_dataset.json` contains 20 test cases across grounding, safety, hallucination, theology, denomination, image safety, and conversation memory categories. |
+| **Empty Verse Filtering** | `app/database.py` skips verses with empty/whitespace-only text during ingestion, preventing citations with no content. |
 
 ## Safety & Guardrails
 
 - **Moderation Node**: All queries pass through an LLM-based safety check before retrieval. Catches adversarial rewrites, hateful content, and prompt injection.
 - **Fake Scripture**: If a user requests a non-existent book (e.g., "Hezekiah 3:16"), the vector store returns nothing, and the generator states "This text or book does not exist within historical scriptural data."
 - **Grounded Generation**: The system prompt forces the model to answer *only* from the retrieved context block, with explicit citations. No hallucination.
-- **Image Safety**: All DALL-E 3 prompts are prefixed with a protective guardrail string prohibiting anachronisms, cartoons, and offensive elements.
+- **Image Safety**: Image descriptions are LLM-moderated before generation. DALL-E 3 / Pollinations.ai prompts are prefixed with a protective guardrail string prohibiting anachronisms, cartoons, and offensive elements.
 
 ## Running
 
@@ -96,6 +107,22 @@ cd frontend
 npm install
 npm run dev          # proxies /api to localhost:8000
 ```
+
+## Evaluation
+
+A dataset of 20 edge-case prompts is at `tests/evaluation_dataset.json`. Categories:
+
+| Category | Count | Examples |
+|---|---|---|
+| grounding | 5 | Basic Bible queries, out-of-scope questions |
+| hallucination | 2 | Fake books (Hezekiah 3:16), fabricated texts |
+| safety | 4 | Adversarial rewrites, hateful content, prompt injection |
+| theology | 2 | Problem of evil, Trinity coherence |
+| denomination | 3 | Canon scope per tradition |
+| image_safety | 2 | Inappropriate biblical depictions |
+| memory | 1 | Multi-turn conversation follow-up |
+
+Test manually with curl or the chat UI against each case.
 
 ## Stack
 

@@ -2,6 +2,15 @@ import { useState, useRef, useEffect } from 'react'
 
 const DENOMINATIONS = ["Protestant", "Catholic", "Orthodox"]
 
+function sessionId() {
+  let id = sessionStorage.getItem("chat_session_id")
+  if (!id) {
+    id = crypto.randomUUID()
+    sessionStorage.setItem("chat_session_id", id)
+  }
+  return id
+}
+
 function ChatMessage({ role, text, citations, onVisualize, generating }) {
   const [showCitations, setShowCitations] = useState(false)
   const isUser = role === "user"
@@ -100,8 +109,8 @@ export default function App() {
   const [input, setInput] = useState("")
   const [denomination, setDenomination] = useState("Protestant")
   const [generating, setGenerating] = useState(false)
-  const [generatingImage, setGeneratingImage] = useState(false)
   const chatEnd = useRef(null)
+  const sid = useRef(sessionId())
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth" })
@@ -117,14 +126,13 @@ export default function App() {
     setInput("")
     setGenerating(true)
 
-    // optimistically add a placeholder
     setMessages((prev) => [...prev, { role: "assistant", text: "", citations: [], generating: true }])
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed, denomination }),
+        body: JSON.stringify({ message: trimmed, denomination, session_id: sid.current }),
       })
       const data = await res.json()
       setMessages((prev) => {
@@ -153,7 +161,6 @@ export default function App() {
   }
 
   async function handleVisualize(text) {
-    setGeneratingImage(true)
     try {
       const res = await fetch("/api/generate-image", {
         method: "POST",
@@ -171,14 +178,17 @@ export default function App() {
             imageUrl: data.image_url,
           },
         ])
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "Image generation was blocked by safety moderation.", citations: [] },
+        ])
       }
     } catch {
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: "Image generation failed. Check API configuration.", citations: [] },
       ])
-    } finally {
-      setGeneratingImage(false)
     }
   }
 
@@ -188,24 +198,23 @@ export default function App() {
       <main className="flex-1 flex flex-col">
         <div className="flex-1 overflow-y-auto px-4 py-6">
           <div className="max-w-3xl mx-auto">
-            {messages.map((msg, i) => (
-              <ChatMessage
-                key={i}
-                role={msg.role}
-                text={msg.text}
-                citations={msg.citations}
-                generating={msg.generating}
-                onVisualize={handleVisualize}
-              />
-            ))}
             {messages.map((msg, i) =>
               msg.imageUrl ? (
-                <div key={`img-${i}`} className="flex justify-start mb-4">
+                <div key={i} className="flex justify-start mb-4">
                   <div className="max-w-[75%] rounded-2xl px-4 py-3 bg-gray-100 rounded-bl-md">
                     <img src={msg.imageUrl} alt="Generated biblical scene" className="rounded-lg w-full" />
                   </div>
                 </div>
-              ) : null
+              ) : (
+                <ChatMessage
+                  key={i}
+                  role={msg.role}
+                  text={msg.text}
+                  citations={msg.citations}
+                  generating={msg.generating}
+                  onVisualize={handleVisualize}
+                />
+              )
             )}
             <div ref={chatEnd} />
           </div>

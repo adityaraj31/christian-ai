@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     denomination: str = Field(default="Protestant", pattern=r"^(Protestant|Catholic|Orthodox)$")
+    session_id: str = Field(default="default")
 
 
 class Citation(BaseModel):
