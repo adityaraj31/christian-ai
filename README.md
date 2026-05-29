@@ -2,6 +2,8 @@
 
 A production-grade, secure Christianity-focused AI assistant that provides grounded, citation-based biblical answers.
 
+**Architectural Note**: This application uses a 3-node LangGraph state machine — Moderation → Retrieval → Generation — chained sequentially with a conditional safety bypass. Queries are first evaluated by an LLM guardrail; unsafe requests skip retrieval and go directly to a refusal response. Safe queries retrieve the top-4 semantically similar Bible verses from an in-memory FAISS index (populated at startup from 1189 chapter JSONs) and pass them as strict context to the generator, which is forced to answer exclusively from those citations. The frontend is a React chat UI with a denominational sidebar, citation toggles, and an image-generation trigger.
+
 ## Architecture
 
 ```
