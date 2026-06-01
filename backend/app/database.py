@@ -94,7 +94,7 @@ def init_vector_store() -> None:
     print(f"  BM25 index built with {len(_docs)} documents.")
 
 
-def hybrid_search(query: str, k: int = HYBRID_K) -> list[Document]:
+def hybrid_search(query: str, k: int = HYBRID_K) -> tuple[list[Document], list[float]]:
     if _vector_store is None or _bm25 is None:
         raise RuntimeError("Vector store not initialized. Call init_vector_store() first.")
 
@@ -145,12 +145,14 @@ def hybrid_search(query: str, k: int = HYBRID_K) -> list[Document]:
 
     seen = set()
     results = []
+    out_scores = []
     for idx in top_indices:
         doc = idx_to_doc.get(idx, _docs[idx]) if idx < len(_docs) else _docs[idx]
         key = doc.metadata.get("citation", "")
         if key not in seen:
             seen.add(key)
             results.append(doc)
+            out_scores.append(fused[idx])
         if len(results) >= k:
             break
 
@@ -161,7 +163,8 @@ def hybrid_search(query: str, k: int = HYBRID_K) -> list[Document]:
             if key not in seen:
                 seen.add(key)
                 results.append(doc)
+                out_scores.append(0.0)
             if len(results) >= k:
                 break
 
-    return results
+    return results, out_scores

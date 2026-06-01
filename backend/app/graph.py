@@ -101,7 +101,15 @@ def _get_llm():
     )
 
 
+ADVERSARIAL_KEYWORDS = re.compile(
+    r'\b(rewrite|alter\s.*text|fabricate|ignore\s.*(instruction|guideline|rule)|pretend\s+(you|to be)|change\s.*to\s.*support)\b',
+    re.IGNORECASE,
+)
+
+
 def _query_references_bible(query: str) -> bool:
+    if ADVERSARIAL_KEYWORDS.search(query):
+        return False
     q = query.lower()
     for name in _BOOK_NAMES_SORTED:
         if name in q:
@@ -109,6 +117,10 @@ def _query_references_bible(query: str) -> bool:
     if re.search(r'\d+\s*:\s*\d+', q):
         return True
     return False
+
+
+def _has_verse_pattern(query: str) -> bool:
+    return bool(re.search(r'\d+\s*:\s*\d+', query))
 
 
 def moderation_node(state: AgentState, config: RunnableConfig) -> AgentState:
@@ -210,17 +222,37 @@ def retrieval_node(state: AgentState, config: RunnableConfig) -> AgentState:
     if exact:
         context_parts = [f"[{d['citation']}]: {d['page_content']}" for d in exact]
         citations = [{"text": d["page_content"], "reference": d["citation"]} for d in exact]
-    else:
-        docs = hybrid_search(state["query"], k=4)
-        context_parts = []
-        citations = []
-        for doc in docs:
-            citation_str = f"[{doc.metadata['citation']}]: {doc.page_content}"
-            context_parts.append(citation_str)
-            citations.append({
-                "text": doc.page_content,
-                "reference": doc.metadata["citation"],
-            })
+        return {
+            **state,
+            "retrieved_context": "\n\n".join(context_parts),
+            "citations": citations,
+        }
+
+    if _has_verse_pattern(state["query"]):
+        return {
+            **state,
+            "response": "I'm sorry, but that text does not exist within the biblical canon. The book or passage you referenced is not part of the historical scriptural data.",
+            "retrieved_context": "",
+            "citations": [],
+        }
+
+    docs, scores = hybrid_search(state["query"], k=4)
+    if not docs or (scores and scores[0] < 0.05):
+        return {
+            **state,
+            "retrieved_context": "",
+            "citations": [],
+        }
+
+    context_parts = []
+    citations = []
+    for doc in docs:
+        citation_str = f"[{doc.metadata['citation']}]: {doc.page_content}"
+        context_parts.append(citation_str)
+        citations.append({
+            "text": doc.page_content,
+            "reference": doc.metadata["citation"],
+        })
     return {
         **state,
         "retrieved_context": "\n\n".join(context_parts),
