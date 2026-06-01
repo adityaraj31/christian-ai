@@ -2,7 +2,7 @@
 
 A production-grade, secure Christianity-focused AI assistant that provides grounded, citation-based biblical answers with image generation capabilities.
 
-**Architectural Note**: This application uses a 3-node LangGraph state machine — Moderation → Retrieval → Generation — chained sequentially with a conditional safety bypass. Queries are first evaluated by an LLM guardrail; unsafe requests skip retrieval and go directly to a refusal response. Safe queries retrieve the top-4 semantically similar Bible verses from a cached FAISS index (31K verses, `all-MiniLM-L6-v2`) and pass them as strict context to the generator, which is forced to answer exclusively from those citations. The frontend is a React chat UI with a denominational sidebar, citation toggles, and an image-generation trigger backed by Replicate's `google/imagen-4`.
+**Architectural Note**: This application uses a 3-node LangGraph state machine — Moderation → Retrieval → Generation — chained sequentially with a conditional safety bypass. Queries are first evaluated by an LLM guardrail; unsafe requests skip retrieval and go directly to a refusal response. Safe queries retrieve the top-4 Bible verses using **hybrid search** (BM25 keyword scoring + FAISS semantic embeddings fused with weighted score normalization at 40/60 ratio) and pass them as strict context to the generator, which is forced to answer exclusively from those citations. The frontend is a React chat UI with a denominational sidebar, citation toggles, and an image-generation trigger backed by Replicate's `google/imagen-4`.
 
 ![Chat Interface](image/Screenshot%20from%202026-05-29%2012-55-02.png)
 
@@ -11,7 +11,7 @@ A production-grade, secure Christianity-focused AI assistant that provides groun
 All queries flow through a **3-node LangGraph state machine**:
 
 1. **Moderation Node** — LLM guardrail evaluates the query. Unsafe requests (rewrites, hateful content, prompt injection) are immediately routed to a polite refusal.
-2. **Retrieval Node** — Safe queries retrieve the top-4 semantically similar Bible verses from a FAISS vector index (31K+ verses, embedded via `all-MiniLM-L6-v2`). If a `Book Ch:Verse` pattern is detected, an exact file lookup is used instead.
+2. **Retrieval Node** — Safe queries retrieve the top-4 Bible verses via **hybrid search**: BM25 keyword scores (40%) fused with FAISS semantic similarity scores (60%) using min-max normalized score fusion. If a `Book Ch:Verse` pattern is detected, an exact file lookup is used instead.
 3. **Generation Node** — The generator is forced to answer *only* from the retrieved context, with citations. Denominational context (Protestant/Catholic/Orthodox) is injected seamlessly.
 
 ```
@@ -42,12 +42,16 @@ User ──► Moderation ──► SAFE? ──► Retrieval ──► Generati
 │  ┌────────────────────────────────────────────────────┐    │
 │  │  LangGraph: Moderation → Retrieval → Generation    │    │
 │  └────────────────────────────────────────────────────┘    │
-│  ┌──────────────────┐  ┌────────────────────────────┐      │
-│  │  FAISS Index     │  │  Image Generation         │      │
-│  │  31K verses      │  │  google/imagen-4 (Replicate)│     │
-│  │  all-MiniLM-L6-v2│  │  → DALL-E 3               │      │
-│  └────────┬─────────┘  │  → Pollinations.ai (free)  │      │
-│           │            └────────────────────────────┘      │
+│  ┌─────────────────────┐  ┌────────────────────────────┐   │
+│  │  Hybrid Search      │  │  Image Generation         │   │
+│  │  ┌─────────┐┌──────┤  │  google/imagen-4 (Replicate)│   │
+│  │  │  BM25   ││FAISS │  │  → DALL-E 3               │   │
+│  │  │(40%)    ││(60%) │  │  → Pollinations.ai (free)  │   │
+│  │  └─────────┘└──────┤  └────────────────────────────┘   │
+│  │  Score fusion ↓    │                                    │
+│  │  Top-4 verses      │                                    │
+│  └─────────┬──────────┘                                    │
+│           │                                                 │
 │  ┌────────▼─────────┐                                      │
 │  │  bible_data/     │                                      │
 │  │  1189 JSON files │                                      │
@@ -61,7 +65,7 @@ User ──► Moderation ──► SAFE? ──► Retrieval ──► Generati
 
 | File | Role |
 |---|---|
-| `app/database.py` | Loads Bible data into FAISS index. Caches to disk after first build for near-instant startup. Skips empty verses. |
+| `app/database.py` | Loads Bible data, builds FAISS semantic index + BM25 keyword index. Provides `hybrid_search()` that fuses BM25 (40%) and FAISS (60%) scores via min-max normalized weighted fusion. Caches FAISS to disk for near-instant startup. Skips empty verses. |
 | `app/schemas.py` | Pydantic models — `ChatRequest` (message, denomination, session_id), `ChatResponse` (response, safety_triggered, citations), `ImageRequest`/`ImageResponse`. |
 | `app/graph.py` | LangGraph state machine. Three nodes with conditional safety edge. Book-aware exact verse lookup for `Book Ch:Verse` queries. Moderation auto-passes for known biblical book references. |
 | `app/main.py` | FastAPI lifespan (vector store + graph init on startup). Endpoints: `GET /health`, `POST /api/chat`, `POST /api/generate-image`. Conversation memory via `_chat_store` dict keyed by session_id (last 20 messages). Image moderation guardrail. |
@@ -139,6 +143,6 @@ curl -s http://localhost:8000/api/chat \
 - **Backend**: Python 3.13, FastAPI, uv
 - **Orchestration**: LangChain, LangGraph
 - **LLM**: OpenRouter / Groq (via `ChatOpenAI`)
-- **Vector Store**: FAISS (cached to disk) + `all-MiniLM-L6-v2`
+- **Vector Store**: FAISS (cached to disk) + BM25 (`rank-bm25`) + `all-MiniLM-L6-v2` (hybrid search, 40/60 weighted score fusion)
 - **Image Gen**: Replicate (`google/imagen-4`) / DALL-E 3 / Pollinations.ai
 - **Frontend**: React, Vite, Tailwind CSS
