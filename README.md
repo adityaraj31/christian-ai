@@ -11,7 +11,7 @@ A production-grade, secure Christianity-focused AI assistant that provides groun
 All queries flow through a **3-node LangGraph state machine**:
 
 1. **Moderation Node** — LLM guardrail evaluates the query. Unsafe requests (rewrites, hateful content, prompt injection) are immediately routed to a polite refusal.
-2. **Retrieval Node** — Safe queries retrieve the top-4 Bible verses via **hybrid search**: BM25 keyword scores (40%) fused with FAISS semantic similarity scores (60%) using min-max normalized score fusion. If a `Book Ch:Verse` pattern is detected, an exact file lookup is used instead.
+2. **Retrieval Node** — First tries exact `Book Ch:Verse` file lookup. If a `Ch:V` pattern exists but no recognized book is found (fake scripture like "Hezekiah 3:16"), returns an immediate refusal. Otherwise runs **hybrid search**: BM25 keyword scores (40%) fused with FAISS semantic similarity scores (60%) via min-max normalized weighted fusion. Results with a top fused score below 0.05 are discarded (out-of-scope detection).
 3. **Generation Node** — The generator is forced to answer *only* from the retrieved context, with citations. Denominational context (Protestant/Catholic/Orthodox) is injected seamlessly.
 
 ```
@@ -67,7 +67,7 @@ User ──► Moderation ──► SAFE? ──► Retrieval ──► Generati
 |---|---|
 | `app/database.py` | Loads Bible data, builds FAISS semantic index + BM25 keyword index. Provides `hybrid_search()` that fuses BM25 (40%) and FAISS (60%) scores via min-max normalized weighted fusion. Caches FAISS to disk for near-instant startup. Skips empty verses. |
 | `app/schemas.py` | Pydantic models — `ChatRequest` (message, denomination, session_id), `ChatResponse` (response, safety_triggered, citations), `ImageRequest`/`ImageResponse`. |
-| `app/graph.py` | LangGraph state machine. Three nodes with conditional safety edge. Book-aware exact verse lookup for `Book Ch:Verse` queries. Moderation auto-passes for known biblical book references. |
+| `app/graph.py` | LangGraph state machine. Three nodes with conditional safety edge. Book-aware exact verse lookup for `Book Ch:Verse` queries. Adversarial keyword detection prevents rewrite/fabricate queries from bypassing moderation. Fake scripture (`Ch:V` pattern with no known book) returns immediate refusal. Out-of-scope queries filtered by hybrid search score threshold. |
 | `app/main.py` | FastAPI lifespan (vector store + graph init on startup). Endpoints: `GET /health`, `POST /api/chat`, `POST /api/generate-image`. Conversation memory via `_chat_store` dict keyed by session_id (last 20 messages). Image moderation guardrail. |
 
 ### Frontend
@@ -79,8 +79,9 @@ User ──► Moderation ──► SAFE? ──► Retrieval ──► Generati
 
 ## Safety & Guardrails
 
-- **Moderation Node**: All queries pass through an LLM-based safety check before retrieval. Catches adversarial rewrites, hateful content, and prompt injection. Queries referencing known biblical books auto-pass to avoid false positives.
-- **Fake Scripture**: Non-existent books (e.g., "Hezekiah 3:16") return "no direct scriptural basis" — the generator never fabricates verses.
+- **Moderation Node**: All queries pass through an LLM-based safety check before retrieval. Catches adversarial rewrites, hateful content, and prompt injection. Queries referencing known biblical books auto-pass unless they contain adversarial keywords (`rewrite`, `fabricate`, `ignore instructions`, `pretend`, etc.).
+- **Fake Scripture**: Non-existent books (e.g., "Hezekiah 3:16") are detected by matching `Ch:V` patterns against the known book name list. The retrieval node returns an immediate refusal — the LLM never receives context to fabricate from.
+- **Out-of-Scope Detection**: Hybrid search returns a fused relevance score. Queries unrelated to Scripture (e.g., stock market advice) score below 0.05 and produce a "no direct scriptural basis" response.
 - **Grounded Generation**: System prompt forces only-context answers with citations. No hallucination.
 - **Historical Defense**: Rule #8 in the generation prompt corrects inaccurate claims (e.g., "Constantine wrote the Bible").
 - **Theological Complexity**: Rule #7 directs the model to acknowledge mystery (e.g., problem of evil) without false resolution.
@@ -129,6 +130,14 @@ Priority chain:
 | denomination | 3 | Canon scope per tradition (Protestant/Catholic/Orthodox) |
 | image_safety | 2 | Inappropriate biblical depictions |
 | memory | 1 | Multi-turn conversation follow-up |
+
+### Run the evaluation suite
+
+```bash
+cd backend && uv run python ../tests/run_evaluation.py
+```
+
+All 20 test cases pass across grounding, safety, hallucination, theology, denomination, image safety, and conversation memory categories.
 
 ### Quick test with curl
 
