@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.database import get_retriever
+from app.database import hybrid_search
 
 DENOM_INSTRUCTIONS = {
     "Protestant": "Answer from a Protestant Christian perspective, using the 66-book Protestant canon.",
@@ -211,8 +211,7 @@ def retrieval_node(state: AgentState, config: RunnableConfig) -> AgentState:
         context_parts = [f"[{d['citation']}]: {d['page_content']}" for d in exact]
         citations = [{"text": d["page_content"], "reference": d["citation"]} for d in exact]
     else:
-        retriever = get_retriever(k=4)
-        docs = retriever.invoke(state["query"])
+        docs = hybrid_search(state["query"], k=4)
         context_parts = []
         citations = []
         for doc in docs:

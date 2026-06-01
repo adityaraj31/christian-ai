@@ -6,13 +6,18 @@ import numpy as np
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from rank_bm25 import BM25Okapi
 
 BIBLE_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "bible_data"
 INDEX_DIR = Path(__file__).resolve().parent / "data" / "faiss_index"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 BATCH_SIZE = 512
+HYBRID_K = 4
+HYBRID_CANDIDATES = 10
 
 _vector_store: Optional[FAISS] = None
+_bm25: Optional[BM25Okapi] = None
+_docs: list[Document] = []
 
 
 def _load_all_verses() -> list[Document]:
@@ -76,12 +81,87 @@ def _load_or_build() -> FAISS:
     return _build_and_save(docs)
 
 
+def _build_bm25_index(docs: list[Document]) -> BM25Okapi:
+    tokenized = [d.page_content.lower().split() for d in docs]
+    return BM25Okapi(tokenized)
+
+
 def init_vector_store() -> None:
-    global _vector_store
+    global _vector_store, _bm25, _docs
+    _docs = _load_all_verses()
     _vector_store = _load_or_build()
+    _bm25 = _build_bm25_index(_docs)
+    print(f"  BM25 index built with {len(_docs)} documents.")
 
 
-def get_retriever(k: int = 4):
-    if _vector_store is None:
+def hybrid_search(query: str, k: int = HYBRID_K) -> list[Document]:
+    if _vector_store is None or _bm25 is None:
         raise RuntimeError("Vector store not initialized. Call init_vector_store() first.")
-    return _vector_store.as_retriever(search_kwargs={"k": k})
+
+    candidates = max(k * 3, HYBRID_CANDIDATES)
+
+    semantic_results = _vector_store.similarity_search_with_relevance_scores(
+        query, k=candidates
+    )
+
+    tokenized_query = query.lower().split()
+    bm25_raw = _bm25.get_scores(tokenized_query)
+    bm25_indices = sorted(range(len(bm25_raw)), key=lambda i: -bm25_raw[i])[:candidates]
+
+    idx_to_doc = {}
+    sem_map = {}
+    sem_scores = []
+    for doc, score in semantic_results:
+        idx = next((i for i, d in enumerate(_docs)
+                    if d.page_content == doc.page_content
+                    and d.metadata.get("citation") == doc.metadata.get("citation")), None)
+        if idx is not None:
+            idx_to_doc[idx] = doc
+            sem_map[idx] = score
+            sem_scores.append(score)
+
+    bm25_candidate_scores = [bm25_raw[i] for i in bm25_indices]
+
+    def min_max_norm(values):
+        if not values:
+            return {}
+        mn, mx = min(values), max(values)
+        if mx == mn:
+            return {v: 0.5 for v in values}
+        return {v: (v - mn) / (mx - mn) for v in values}
+
+    sem_norm = min_max_norm(sem_scores)
+    bm25_norm = min_max_norm(bm25_candidate_scores)
+
+    fused = {}
+
+    for idx in sem_map:
+        fused[idx] = 0.6 * sem_norm.get(sem_map[idx], 0)
+
+    for idx in bm25_indices:
+        fused[idx] = fused.get(idx, 0) + 0.4 * bm25_norm.get(bm25_raw[idx], 0)
+
+    top_indices = sorted(fused, key=lambda i: -fused[i])[:k]
+
+    seen = set()
+    results = []
+    for idx in top_indices:
+        doc = idx_to_doc.get(idx, _docs[idx]) if idx < len(_docs) else _docs[idx]
+        key = doc.metadata.get("citation", "")
+        if key not in seen:
+            seen.add(key)
+            results.append(doc)
+        if len(results) >= k:
+            break
+
+    if len(results) < k:
+        for idx in bm25_indices[:k]:
+            doc = _docs[idx] if idx < len(_docs) else idx_to_doc.get(idx, _docs[0])
+            key = doc.metadata.get("citation", "")
+            if key not in seen:
+                seen.add(key)
+                results.append(doc)
+            if len(results) >= k:
+                break
+
+    return results
